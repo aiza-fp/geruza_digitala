@@ -26,6 +26,8 @@ services:
       POSTGRES_DB: factory
     ports:
       - "5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
 
   telegraf:
     image: telegraf:latest
@@ -50,5 +52,11 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
     depends_on:
       - timescaledb
+
+volumes:
+  timescaledb_data:
+  grafana_data:
