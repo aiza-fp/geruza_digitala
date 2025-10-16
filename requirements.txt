@@ -1,0 +1,5 @@
+# Required for MQTT testing and data publishing
+paho-mqtt>=1.6.1
+
+# Required for configuration file parsing in test scripts
+PyYAML>=6.0.1
