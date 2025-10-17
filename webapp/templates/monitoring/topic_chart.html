@@ -1,0 +1,278 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}{{ topic_name }} - {{ field_name|title }} - MQTT Monitor{% endblock %}
+
+{% block extra_css %}
+<style>
+    .chart-container {
+        position: relative;
+        height: 400px;
+        margin: 20px 0;
+    }
+    .time-range-buttons {
+        margin-bottom: 20px;
+    }
+    .time-range-buttons .btn {
+        margin-right: 5px;
+        margin-bottom: 5px;
+    }
+    .chart-info {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% csrf_token %}
+<div class="row">
+    <div class="col-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'monitoring:dashboard' %}">Dashboard</a></li>
+                <li class="breadcrumb-item"><a href="{% url 'monitoring:host_detail' host_id %}">Host: {{ host_id|truncatechars:12 }}</a></li>
+                <li class="breadcrumb-item active">{{ topic_name }}</li>
+            </ol>
+        </nav>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1><i class="fas fa-chart-line"></i> {{ topic_name }}</h1>
+            <div>
+                <a href="{% url 'monitoring:host_detail' host_id %}" class="btn btn-outline-secondary">
+                    <i class="fas fa-arrow-left"></i> Back to Host
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Chart Info -->
+<div class="chart-info">
+    <div class="row">
+        <div class="col-md-3">
+            <strong>Host:</strong> {{ host_id }}
+        </div>
+        <div class="col-md-3">
+            <strong>Topic:</strong> {{ topic_name }}
+        </div>
+        <div class="col-md-3">
+            <strong>Field:</strong> {{ field_name|title }}
+        </div>
+        <div class="col-md-3">
+            <strong>Data Points:</strong> {{ data_count }}
+        </div>
+    </div>
+</div>
+
+<!-- Time Range Selector -->
+<div class="time-range-buttons">
+    <h5>Time Range:</h5>
+    <a href="?range=5m" class="btn btn-outline-primary {% if time_range == '5m' %}active{% endif %}">Last 5 Minutes</a>
+    <a href="?range=1h" class="btn btn-outline-primary {% if time_range == '1h' %}active{% endif %}">Last Hour</a>
+    <a href="?range=24h" class="btn btn-outline-primary {% if time_range == '24h' %}active{% endif %}">Last 24 Hours</a>
+    <a href="?range=7d" class="btn btn-outline-primary {% if time_range == '7d' %}active{% endif %}">Last 7 Days</a>
+    <a href="?range=30d" class="btn btn-outline-primary {% if time_range == '30d' %}active{% endif %}">Last 30 Days</a>
+</div>
+
+<!-- Chart Container -->
+<div class="card">
+    <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">Time Series Chart</h5>
+            <div>
+                <button id="refreshChart" class="btn btn-sm btn-outline-primary">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+                {% if user.is_editor or user.is_admin %}
+                    <a href="{% url 'monitoring:export_csv' host_id topic_name field_name %}?range={{ time_range }}" 
+                       class="btn btn-sm btn-success">
+                        <i class="fas fa-download"></i> Export CSV
+                    </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="chart-container">
+            <canvas id="timeSeriesChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Loading indicator -->
+<div id="loadingIndicator" class="text-center" style="display: none;">
+    <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+    <p class="mt-2">Loading chart data...</p>
+</div>
+
+<!-- No data message -->
+<div id="noDataMessage" class="alert alert-info text-center" style="display: none;">
+    <i class="fas fa-info-circle fa-3x mb-3"></i>
+    <h4>No Data Available</h4>
+    <p>No data points found for the selected time range.</p>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let chart = null;
+    const hostId = '{{ host_id }}';
+    const topicName = '{{ topic_name }}';
+    const fieldName = '{{ field_name }}';
+    const timeRange = '{{ time_range }}';
+    
+    // Load chart data - REAL DATA VERSION
+    function loadChartData() {
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const noDataMessage = document.getElementById('noDataMessage');
+        
+        loadingIndicator.style.display = 'block';
+        noDataMessage.style.display = 'none';
+        
+        fetch(`/api/host/${hostId}/topic/${encodeURIComponent(topicName)}/field/${fieldName}/data/?range=${timeRange}`, {
+            method: 'GET',
+            credentials: 'same-origin',
+            headers: {
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+                'Content-Type': 'application/json',
+            }
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                loadingIndicator.style.display = 'none';
+                
+                if (data.labels.length === 0) {
+                    noDataMessage.style.display = 'block';
+                    return;
+                }
+                
+                // Convert data to readable time format for Chart.js 2.x
+                const chartData = {
+                    labels: data.labels.map((label, index) => {
+                        const date = new Date(label);
+                        // Smart time formatting based on data density
+                        const totalPoints = data.labels.length;
+                        if (totalPoints <= 10) {
+                            // Few points: show full time
+                            return date.toLocaleString();
+                        } else if (totalPoints <= 50) {
+                            // Medium points: show time only
+                            return date.toLocaleTimeString();
+                        } else {
+                            // Many points: show abbreviated format
+                            return date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        }
+                    }),
+                    datasets: data.datasets.map(dataset => ({
+                        label: dataset.label,
+                        data: dataset.data.map(value => value === null ? null : parseFloat(value)),
+                        borderColor: dataset.borderColor || 'rgb(75, 192, 192)',
+                        backgroundColor: dataset.backgroundColor || 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1,
+                        fill: false
+                    }))
+                };
+                
+                // Store original labels for tooltip display
+                chartData.originalLabels = data.labels;
+                
+                updateChart(chartData);
+            })
+            .catch(error => {
+                loadingIndicator.style.display = 'none';
+                console.error('Error loading chart data:', error);
+                alert('Error loading chart data. Please try again.');
+            });
+    }
+    
+    // Update chart with new data - SIMPLIFIED VERSION
+    function updateChart(data) {
+        const ctx = document.getElementById('timeSeriesChart').getContext('2d');
+        
+        if (chart) {
+            chart.destroy();
+        }
+        
+        // Use data as-is, no processing - Chart.js 2.x format
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: data,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    xAxes: [{
+                        display: true,
+                        ticks: {
+                            maxTicksLimit: 10,
+                            callback: function(value, index, values) {
+                                // Show every nth label based on data density
+                                const step = Math.ceil(values.length / 10);
+                                if (index % step === 0) {
+                                    // Get the label from the data labels array
+                                    const dataLabels = this.chart.data.labels;
+                                    return dataLabels[value] || '';
+                                }
+                                return '';
+                            }
+                        }
+                    }],
+                    yAxes: [{
+                        display: true,
+                        title: {
+                            display: true,
+                            text: '{{ field_name|title }}'
+                        }
+                    }]
+                },
+                legend: {
+                    display: true
+                },
+                tooltips: {
+                    callbacks: {
+                        title: function(tooltipItem, data) {
+                            const index = tooltipItem[0].index;
+                            if (data.originalLabels && data.originalLabels[index]) {
+                                return data.originalLabels[index];
+                            }
+                            return data.labels[index] || `Point ${index + 1}`;
+                        },
+                        label: function(tooltipItem, data) {
+                            return data.datasets[tooltipItem.datasetIndex].label + ': ' + tooltipItem.yLabel;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // Refresh button event
+    document.getElementById('refreshChart').addEventListener('click', function() {
+        loadChartData();
+    });
+    
+    // Load chart on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        loadChartData();
+    });
+    
+    // Auto-refresh every 5 minutes
+    setInterval(function() {
+        loadChartData();
+    }, 300000);
+</script>
+{% endblock %}

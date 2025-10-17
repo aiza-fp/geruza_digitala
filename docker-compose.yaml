@@ -8,6 +8,8 @@ services:
       - "9001:9001"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    environment:
+      TZ: Europe/Madrid
 
 #  nodered:
 #    image: nodered/node-red
@@ -28,6 +30,11 @@ services:
       - "5432:5432"
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d factory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   telegraf:
     image: telegraf:latest
@@ -52,10 +59,29 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - TZ=Europe/Madrid
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:
       - timescaledb
+
+  webapp:
+    build: ./webapp
+    container_name: webapp
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_HOST=timescaledb
+      - DATABASE_NAME=factory
+      - DATABASE_USER=admin
+      - DATABASE_PASSWORD=admin
+      - DATABASE_PORT=5432
+      - SECRET_KEY=django-insecure-change-this-in-production
+      - DEBUG=False
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   timescaledb_data:
